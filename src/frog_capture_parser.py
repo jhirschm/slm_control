@@ -5,7 +5,7 @@ from matplotlib.widgets import Slider, Button, TextBox
 
 # File path to the FROG measurement data
 file_path = '/Users/jhirschm/Documents/ShapingExperiment/FrogData/03062025/flint_1_n.05tp.05w.001_480t560_500ms.pyfrog'
-
+file_path = 'C:\\FrogData\\03062025\\flint_1_n.05tp.05w.001_480t560_500ms.pyfrog'
 
 # Initialize lists to hold data components
 header = ""
