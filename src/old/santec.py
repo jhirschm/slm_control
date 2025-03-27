@@ -161,7 +161,7 @@ class SantecSLM:
 #     slm.close()
 
 if __name__ == "__main__":
-    slm = SantecSLM(slm_number=1, display_number=1, bitdepth=10, wav_um=1.0, verbose=True)
+    slm = SantecSLM(slm_number=1, display_number=2, bitdepth=10, wav_um=1.0, verbose=True)
 
     # # Ensure the monitor is receiving input
     # if not slm.is_monitor_active():
@@ -176,11 +176,11 @@ if __name__ == "__main__":
     # slm.set_memory_mode()
 
     # Load a CSV file to the SLM
-    slm.load_csv("C:\\Users\\lasopr\\Downloads\\phase_29.csv")
+    slm.load_csv("C:\\Users\\lasopr\\Downloads\\phase_13.csv")
 
     # Allow time for visual inspection
     print("Pausing for 10 seconds for manual verification of SLM display...")
-    time.sleep(10)
+    time.sleep(100)
 
     # Load a CSV file to the SLM
     slm.load_csv("C:\\Users\\lasopr\\Downloads\\phase_13.csv")

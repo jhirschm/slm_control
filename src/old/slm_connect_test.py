@@ -4,8 +4,18 @@ import ctypes
 import time
 import numpy as np
 import os
-import _slm_win as slm
+import warnings
 
+try:
+    import _slm_win as slm  # Load Santec's functions
+except Exception as e:
+    warnings.warn(
+        "Santec DLLs not installed. Install these to use Santec SLMs.\n"
+        "Ensure the following DLLs are present in the runtime directory:\n"
+        "  - SLMFunc.dll\n  - FTD3XX.dll\n"
+        f"Original error: {e}"
+    )
+    slm_funcs = None
 Rate120 = True
 
 ######################################
@@ -156,7 +166,8 @@ def Test_Memory_mode():
     slm.SLM_Ctrl_Close(SLMNumber)
     
     ret = slm.SLM_Ctrl_Open(SLMNumber)
-    if(ret != slm.SLM_OK):
+    # if(ret != slm.SLM_OK):
+    if(1):
         print(ret)
         return
     else:
@@ -258,8 +269,8 @@ def Test_Memory_mode():
 def main():
     #ChangeMode(1,1)
 
-    Test_DVI_mode()
-    # Test_Memory_mode()
+    # Test_DVI_mode()
+    Test_Memory_mode()
     
         
 if __name__ == '__main__': 

@@ -156,7 +156,7 @@ class FROG:
 
 frog = FROG(integration_time=0.5, averaging=1, central_motor_position=0.165, scan_range=(-0.05, 0.05), step_size=0.005)
 
-# Collect Data
+# # Collect Data
 trace, real_positions = frog.run()
 
 # Get System Info

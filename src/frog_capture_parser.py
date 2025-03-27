@@ -6,6 +6,7 @@ from matplotlib.widgets import Slider, Button, TextBox
 # File path to the FROG measurement data
 file_path = '/Users/jhirschm/Documents/ShapingExperiment/FrogData/03062025/flint_1_n.05tp.05w.001_480t560_500ms.pyfrog'
 file_path = 'C:\\FrogData\\03062025\\flint_1_n.05tp.05w.001_480t560_500ms.pyfrog'
+file_path = 'C:\\FrogData\\03072025\\slmPhase13_1_n.05tp.05w.001_480t560_500ms.frog.pyfrog'
 
 # Initialize lists to hold data components
 header = ""
@@ -110,5 +111,29 @@ def reset(event):
     update_plot()
 
 button.on_clicked(reset)
+
+plt.show()
+
+# Plot within the desired wavelength limits
+wavelength_min, wavelength_max = 480, 560
+wavelength_mask = (wavelength_data >= wavelength_min) & (wavelength_data <= wavelength_max)
+
+fig, ax = plt.subplots(figsize=(8, 6))
+im = ax.imshow(
+    spectral_array[wavelength_mask, :],
+    aspect='auto',
+    extent=[delay_data.min(), delay_data.max(), wavelength_min, wavelength_max],
+    origin='lower',
+    cmap='jet'  # matching colormap from your provided figure
+)
+
+plt.colorbar(im, ax=ax, label='Intensity (a.u.)')
+ax.set_xlabel('Delay (fs)')
+ax.set_ylabel('Wavelength (nm)')
+ax.set_title('FROG Measurement Data (490-560 nm)')
+
+plt.tight_layout()
+# plt.savefig('C:\\FrogData\\03062025\\flint_1_n.05tp.05w.001_480t560_500ms.pdf')
+plt.savefig('C:\\FrogData\\03072025\\slmPhase13_1_n.05tp.05w.001_480t560_500ms.frog.pdf')
 
 plt.show()
