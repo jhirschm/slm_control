@@ -68,6 +68,7 @@ import sys
 from scipy.optimize import minimize
 from scipy.stats import wasserstein_distance
 from skimage.metrics import structural_similarity as ssim
+import ot
 
 # Global Functions
 # Global flag for user interrupt
@@ -131,6 +132,9 @@ def parse_args():
     parser.add_argument('--max_steps', type=int, default=100, help='Maximum number of optimization steps')
     parser.add_argument('--error_min', type=float, default=1e-4, help='Error threshold for convergence')
     parser.add_argument('--target_spectrogram', type=str, help='Path to target FROG spectrogram (.npy file)')
+    parser.add_argument('--patience', type=int, default=5, help='Number of steps without improvement before early stopping')
+    parser.add_argument('--min_delta', type=float, default=1e-5, help='Minimum change in loss to count as improvement')
+
 
     return parser.parse_args()
     
@@ -157,8 +161,6 @@ def save_params_yaml(path, frog_params, slm_params, error_params, max_steps, err
         "frog_parameters": frog_params,
         "slm_parameters": slm_params,
         "error_parameters": error_params,
-        "max_steps": max_steps,
-        "error_min": error_min,
         "environment": env_info
     }
 
@@ -178,6 +180,18 @@ def create_h5_file(path, frog_params, slm_params, error_params):
         slm_params (dict): Dictionary of SLM parameters.
         error_params (dict): Dictionary of error weighting parameters.
     """
+    def flatten_dict(d, parent_key='', sep='/'):
+        items = []
+        for k, v in d.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
+            if isinstance(v, dict):
+                items.extend(flatten_dict(v, new_key, sep=sep).items())
+            elif isinstance(v, (list, tuple, np.ndarray)):
+                items.append((new_key, str(v)))  # Save as string for HDF5 compatibility
+            else:
+                items.append((new_key, v))
+        return dict(items)
+    
     h5_path = path / H5_FILE
     with h5py.File(h5_path, 'w') as f:
         # Save FROG parameters
@@ -190,9 +204,10 @@ def create_h5_file(path, frog_params, slm_params, error_params):
         for k, v in slm_params.items():
             slm_group.attrs[k] = v
 
-        # Save Error parameters
+        # Flatten and save error parameters
         error_group = f.create_group("settings/error")
-        for k, v in error_params.items():
+        flat_error = flatten_dict(error_params)
+        for k, v in flat_error.items():
             error_group.attrs[k] = v
 
     print("[H5] Settings saved (FROG, SLM, Error parameters).")
@@ -311,17 +326,32 @@ def wasserstein_loss(target, current):
     """Compute Wasserstein (Earth Mover's Distance)"""
     return wasserstein_distance(target.flatten(), current.flatten())
 
-def hybrid_loss(target, current, alpha=1.0, beta=1.0):
+def hybrid_loss(target, current, alpha=1.0, beta=1.0, normalize=False, use_emd2=False):
     """
     Compute a weighted hybrid loss function:
     L = alpha * Wasserstein Distance + beta * (1 - SSIM)
+    
+    Params:
+        target, current: 2D arrays
+        alpha: weight on Wasserstein
+        beta: weight on SSIM
+        normalize: if True, normalize both inputs before computing loss
+        use_emd2: if True, use 2D EMD from POT instead of 1D Wasserstein
     """
-    w_dist = wasserstein_loss(target, current)
-    ssim_val = ssim(target, current, data_range=target.max() - target.min())
+    if normalize:
+        target = target / np.max(target) if np.max(target) > 0 else target
+        current = current / np.max(current) if np.max(current) > 0 else current
 
-    # Compute the final loss
+    if use_emd2:
+        w_dist = emd2_pot(target, current)
+    else:
+        w_dist = wasserstein_loss(target, current)
+
+    ssim_val = ssim(target, current, data_range=target.max() - target.min())
     loss = alpha * w_dist + beta * (1 - ssim_val)
+
     return loss, w_dist, ssim_val
+
 
 def plot(delay, wavelengths, masked_target, masked_trace, save_name, working_dir):
     """
@@ -408,45 +438,65 @@ def create_runtime_plots_directory(working_dir):
     print(f"Directory created: {new_dir}")
     return new_dir
 
-def save_iteration_data(h5_path, iteration, phase_mask, trace, masked_trace, polynomial_coeffs, wasserstein_loss, ssim, total_loss):
-    """
-    Saves per-iteration data into the HDF5 file.
+# def save_iteration_data(h5_path, iteration, phase_mask, trace, masked_trace, polynomial_coeffs, wasserstein_loss, ssim, total_loss):
+#     """
+#     Saves per-iteration data into the HDF5 file.
 
-    Args:
-        h5_path (Path): Path to the HDF5 file.
-        iteration (int): Current iteration number.
-        phase_mask (2D array): The phase mask applied to the SLM.
-        trace (2D array): The measured FROG trace.
-        masked_trace (2D array): The masked FROG trace.
-        polynomial_coeffs (1D array): The polynomial coefficients used for the phase mask.
-        wasserstein_loss (float): Wasserstein distance loss.
-        ssim (float): Structural similarity index.
-        total_loss (float): Weighted loss function combining Wasserstein and SSIM.
-    """
-    h5_path = Path(h5_path)  # Ensure it's a Path object
-    with h5py.File(h5_path, 'a') as f:  # Open in append mode
+#     Args:
+#         h5_path (Path): Path to the HDF5 file.
+#         iteration (int): Current iteration number.
+#         phase_mask (2D array): The phase mask applied to the SLM.
+#         trace (2D array): The measured FROG trace.
+#         masked_trace (2D array): The masked FROG trace.
+#         polynomial_coeffs (1D array): The polynomial coefficients used for the phase mask.
+#         wasserstein_loss (float): Wasserstein distance loss.
+#         ssim (float): Structural similarity index.
+#         total_loss (float): Weighted loss function combining Wasserstein and SSIM.
+#     """
+#     h5_path = Path(h5_path)  # Ensure it's a Path object
+#     with h5py.File(h5_path, 'a') as f:  # Open in append mode
 
-        # Check if the iteration already exists
+#         # Check if the iteration already exists
+#         if f"iterations/{iteration}" in f:
+#             raise ValueError(f"Error: Iteration {iteration} already exists in HDF5 file. Data will not be overwritten.")
+
+#         # Create the iteration group
+#         iter_group = f.create_group(f"iterations/{iteration}")
+
+#         # Save phase mask
+#         iter_group.create_dataset("phase_mask", data=phase_mask)
+
+#         # Save FROG traces
+#         iter_group.create_dataset("trace", data=trace)
+#         iter_group.create_dataset("masked_trace", data=masked_trace)
+
+#         # Save polynomial coefficients
+#         iter_group.create_dataset("polynomial_coeffs", data=polynomial_coeffs)
+
+#         # Save loss metrics as attributes
+#         iter_group.attrs["wasserstein_loss"] = wasserstein_loss
+#         iter_group.attrs["ssim"] = ssim
+#         iter_group.attrs["total_loss"] = total_loss
+
+#     print(f"[H5] Iteration {iteration} data saved successfully.")
+def save_iteration_data(h5_path, iteration, phase_mask, trace, masked_trace,
+                        polynomial_coeffs, metrics: dict):
+    h5_path = Path(h5_path)
+    with h5py.File(h5_path, 'a') as f:
         if f"iterations/{iteration}" in f:
-            raise ValueError(f"Error: Iteration {iteration} already exists in HDF5 file. Data will not be overwritten.")
+            raise ValueError(f"Iteration {iteration} already exists.")
 
-        # Create the iteration group
-        iter_group = f.create_group(f"iterations/{iteration}")
+        grp = f.create_group(f"iterations/{iteration}")
+        grp.create_dataset("phase_mask", data=phase_mask)
+        grp.create_dataset("trace", data=trace)
+        grp.create_dataset("masked_trace", data=masked_trace)
+        grp.create_dataset("polynomial_coeffs", data=polynomial_coeffs)
 
-        # Save phase mask
-        iter_group.create_dataset("phase_mask", data=phase_mask)
-
-        # Save FROG traces
-        iter_group.create_dataset("trace", data=trace)
-        iter_group.create_dataset("masked_trace", data=masked_trace)
-
-        # Save polynomial coefficients
-        iter_group.create_dataset("polynomial_coeffs", data=polynomial_coeffs)
-
-        # Save loss metrics as attributes
-        iter_group.attrs["wasserstein_loss"] = wasserstein_loss
-        iter_group.attrs["ssim"] = ssim
-        iter_group.attrs["total_loss"] = total_loss
+        for k, v in metrics.items():
+            try:
+                grp.attrs[k] = float(v)
+            except (TypeError, ValueError):
+                grp.attrs[k] = str(v)  # fallback: store as string
 
     print(f"[H5] Iteration {iteration} data saved successfully.")
 
@@ -470,6 +520,344 @@ def save_static_data(h5_path, real_positions, delay_data):
             print("[H5] Static data saved (real_positions & delay_data).")
         else:
             print("[H5] Static data already exists. Skipping save.")
+# def optimize_coefficients(initial_coeffs, target_image, slm, slm_parameters, frog, frog_parameters, error_parameters, h5_path, plot_dir,working_dir):
+#     global interrupted
+#     state = load_state(working_dir)
+#     start_time = datetime.now()
+
+#     if state:
+#         print(f"[RESUME] Resuming from iteration {state['step']}")
+#         initial_coeffs = state["best_params"]
+#         step = state["step"]
+#     else:
+#         step = 1
+
+#     def objective_function(coeffs):
+#         nonlocal step
+
+#         # Generate phase pattern
+#         unwrapped_phase = phase_mask(coeffs, slm_parameters["effective_scale"], slm_parameters["width"])
+#         pattern = generate_phase_pattern(
+#             slm_parameters["width"], 
+#             slm_parameters["height"],
+#             unwrapped_phase, Path(working_dir) / "temp.csv")
+#         slm.load_csv(str(Path(working_dir) / "temp.csv"))
+
+#         # Run FROG
+#         trace, real_positions = frog.run(close=False)
+#         trace = trace.squeeze()
+#         _, masked_trace = frog.mask_trace(trace, frog_parameters["wavelength_range"])
+#         _, masked_target = frog.mask_trace(target_image, frog_parameters["wavelength_range"])
+
+#         # Compute loss
+#         loss, w_dist, ssim_val = hybrid_loss(masked_target, masked_trace, error_parameters["wasserstein_weight"], error_parameters["ssim_weight"], normalize=error_parameters["normalize_data"])
+
+#         # Save to HDF5
+#         save_iteration_data(h5_path, step, pattern, trace, masked_trace, coeffs, w_dist, ssim_val, loss)
+
+#         # Save plot every 10 steps
+#         if step % 10 == 0:
+#             plot(frog.delay_vector, frog.wavelength_vector, masked_target, masked_trace, f"plot{step}.pdf", plot_dir)
+
+#         # Save state
+#         save_state(step, coeffs, working_dir)
+
+#         print(f"[Step {step}] Loss: {loss:.6f} | Wasserstein: {w_dist:.4f} | SSIM: {ssim_val:.4f}")
+#         step += 1
+
+#         if interrupted:
+#             print(f"[INTERRUPT] Optimization halted at step {step-1}")
+#             sys.exit(0)
+
+#         return loss
+#     print(f"[L-BFGS INIT] Starting from coefficients: {initial_coeffs}")
+
+#     # Run L-BFGS-B optimizer
+#     result = minimize(
+#         objective_function,
+#         initial_coeffs,
+#         method="L-BFGS-B",
+#         bounds=error_parameters["bounds"],
+#         options={"maxiter": error_parameters["max_steps"], "disp": True}
+#     )
+
+#     end_time = datetime.now()
+#     print(f"[COMPLETE] Optimization finished in {end_time - start_time}. Final loss: {result.fun:.6f}")
+#     return result.x
+def optimize_coefficients(initial_coeffs, target_image, slm, slm_parameters, frog, frog_parameters,
+                          error_parameters, h5_path, plot_dir, working_dir):
+    global interrupted
+    state = load_state(working_dir)
+    start_time = datetime.now()
+
+    if state:
+        print(f"[RESUME] Resuming from iteration {state['step']}")
+        initial_coeffs = state["best_params"]
+        step = state["step"]
+    else:
+        step = 1
+
+    best_loss = float("inf")
+    best_coeffs = None
+    best_step = -1
+
+    def objective_function(coeffs):
+        nonlocal step, best_loss, best_coeffs, best_step
+
+        # Generate phase pattern
+        unwrapped_phase = phase_mask(coeffs, slm_parameters["effective_scale"], slm_parameters["width"])
+        pattern = generate_phase_pattern(
+            slm_parameters["width"],
+            slm_parameters["height"],
+            unwrapped_phase,
+            Path(working_dir) / "temp.csv"
+        )
+        slm.load_csv(str(Path(working_dir) / "temp.csv"))
+
+        # Run FROG
+        trace, real_positions = frog.run(close=False)
+        trace = trace.squeeze()
+        _, masked_trace = frog.mask_trace(trace, frog_parameters["wavelength_range"])
+        _, masked_target = frog.mask_trace(target_image, frog_parameters["wavelength_range"])
+
+        # Compute loss
+        # loss, w_dist, ssim_val = hybrid_loss(
+        #     masked_target,
+        #     masked_trace,
+        #     error_parameters["wasserstein_weight"],
+        #     error_parameters["ssim_weight"],
+        #     normalize=error_parameters.get("normalize_data", False),
+        #     use_emd2=error_parameters.get("use_emd2", False)  
+        # )
+        loss, w_dist, ssim_val, grad_loss,ncc = hybrid_loss_v2(
+            masked_target,
+            masked_trace,
+            error_parameters  
+        )
+
+        metrics = {
+            "wasserstein_loss": w_dist,
+            "ssim": ssim_val,
+            "total_loss": loss,
+            "gradient_loss": grad_loss,
+            "ncc": ncc
+        }
+        save_iteration_data(h5_path, step, pattern, trace, masked_trace, coeffs, metrics)
+
+        # Save to HDF5
+        # save_iteration_data(h5_path, step, pattern, trace, masked_trace, coeffs, w_dist, ssim_val, loss)
+
+        # Save plot every 10 steps
+        if step % 10 == 0:
+            plot(frog.delay_vector, frog.wavelength_vector, masked_target, masked_trace, f"plot{step}.pdf", plot_dir)
+
+        # Save state
+        save_state(step, coeffs, working_dir)
+
+        print(f"[Step {step}] Loss: {loss:.6f} | Wasserstein: {w_dist:.8f} | SSIM: {ssim_val:.4f} | NCC: {ncc:.4f} | Gradient Loss: {grad_loss:.8f}")
+
+        # Track best
+        if loss < best_loss:
+            best_loss = loss
+            best_coeffs = coeffs.copy()
+            best_step = step
+
+        step += 1
+
+        if interrupted:
+            print(f"[INTERRUPT] Optimization halted at step {step-1}")
+            sys.exit(0)
+
+        return loss
+
+    print(f"[L-BFGS INIT] Starting from coefficients: {initial_coeffs}")
+
+    result = minimize(
+        objective_function,
+        initial_coeffs,
+        method="L-BFGS-B",
+        bounds=error_parameters["bounds"],
+        options={"maxiter": error_parameters["max_steps"], "disp": True}
+    )
+
+    end_time = datetime.now()
+    print(f"[COMPLETE] Optimization finished in {end_time - start_time}. Final loss: {result.fun:.6f}")
+
+    # Save best plot explicitly
+    if best_coeffs is not None:
+        print(f"[BEST] Lowest loss: {best_loss:.6f} at iteration {best_step}")
+        best_phase = phase_mask(best_coeffs, slm_parameters["effective_scale"], slm_parameters["width"])
+        best_pattern = generate_phase_pattern(
+            slm_parameters["width"],
+            slm_parameters["height"],
+            best_phase,
+            Path(working_dir) / "best_temp.csv"
+        )
+        slm.load_csv(str(Path(working_dir) / "best_temp.csv"))
+
+        trace, _ = frog.run(close=False)
+        trace = trace.squeeze()
+        _, masked_trace = frog.mask_trace(trace, frog_parameters["wavelength_range"])
+        _, masked_target = frog.mask_trace(target_image, frog_parameters["wavelength_range"])
+
+        best_plot_name = f"plot_best_iter{best_step}_min_error"
+        plot(frog.delay_vector, frog.wavelength_vector, masked_target, masked_trace, best_plot_name, plot_dir)
+        print(f"[PLOT] Saved minimal error result: {best_plot_name}.pdf")
+
+    return best_coeffs
+
+def save_state(step, best_params, working_dir):
+    state_path = Path(working_dir) / "optimizer_state.pkl"
+    with open(state_path, "wb") as f:
+        pickle.dump({
+            "step": step,
+            "best_params": best_params
+        }, f)
+    print(f"[STATE] Saved optimizer state at iteration {step} to {state_path}")
+
+
+def load_state(working_dir):
+    state_path = Path(working_dir) / "optimizer_state.pkl"
+    if state_path.exists():
+        with open(state_path, "rb") as f:
+            return pickle.load(f)
+    return None
+def generate_bounds_from_initial(initial_coeffs, percent=30, adjustable_indices=None):
+    """
+    Generate bounds for each coefficient.
+
+    Args:
+        initial_coeffs (list or array): Initial polynomial coefficients.
+        percent (float): Percentage defining bound size for adjustable coefficients.
+        adjustable_indices (list of ints): Indices to allow adjustment. All others fixed.
+
+    Returns:
+        list of (min, max) tuples for each coefficient.
+    """
+    bounds = []
+    scale = (1 + percent)
+
+    for i, coeff in enumerate(initial_coeffs):
+        if adjustable_indices and i in adjustable_indices:
+            base = abs(coeff)
+            if base == 0:
+                base = 1e-12  # Avoid zero-bound if coeff is exactly zero
+            b = scale * base
+            bounds.append((-b, b))
+        else:
+            bounds.append((coeff, coeff))  # Fixed
+
+    return bounds
+def generate_magnitude_bounds(initial_coeffs, exp_range=1, adjustable_indices=None):
+    """
+    Generate bounds that preserve a limited exponent range but allow sign flips.
+
+    Args:
+        initial_coeffs (list or array): Initial values of coefficients.
+        exp_range (float): Allowed range in log10 scale (e.g., ±1 → one order of magnitude up/down).
+        adjustable_indices (list): Indices to allow adjustment.
+
+    Returns:
+        bounds: list of (min, max) tuples.
+    """
+    bounds = []
+
+    for i, coeff in enumerate(initial_coeffs):
+        if adjustable_indices and i not in adjustable_indices:
+            bounds.append((coeff, coeff))
+            continue
+
+        abs_val = abs(coeff)
+        if abs_val == 0:
+            abs_val = 10**-12  # fallback
+
+        log10_val = np.log10(abs_val)
+        min_exp = log10_val - exp_range
+        max_exp = log10_val + exp_range
+
+        lower = -10 ** max_exp
+        upper = 10 ** max_exp
+        bounds.append((lower, upper))
+
+    return bounds
+def emd2_pot(target, current, epsilon=1e-12):
+    """
+    Computes the 2D Earth Mover's Distance (Wasserstein-2) using POT.
+    Ensures both inputs are normalized and valid.
+    """
+    if target.shape != current.shape:
+        raise ValueError(f"Target and current must have the same shape. Got {target.shape} vs {current.shape}")
+
+    # Avoid divide-by-zero or invalid mass vectors
+    target = np.clip(target, 0, None) + epsilon
+    current = np.clip(current, 0, None) + epsilon
+
+    a = target / np.sum(target)
+    b = current / np.sum(current)
+
+    print(a.shape)
+    print(b.shape)
+    print(a)
+    print(b)
+    print(np.sum(a))
+    print(np.sum(b))
+    print("Are they equal?", np.allclose(a,b))
+
+    if not np.isclose(np.sum(a), 1.0) or not np.isclose(np.sum(b), 1.0):
+        raise ValueError("Normalized distributions a and b do not sum to 1.")
+
+    n, m = target.shape
+    x, y = np.meshgrid(np.arange(m), np.arange(n))
+    coords = np.stack([x.ravel(), y.ravel()], axis=1)
+    print(coords)
+    M = ot.dist(coords, coords, metric='euclidean') ** 2
+    print(M)
+    # emd2 = ot.emd2(a.ravel(), b.ravel(), M)
+    emd2 =  ot.sinkhorn2(a.ravel(), b.ravel(), M, reg=1e-2)
+
+    print(emd2)
+    return emd2
+
+def normalized_cross_correlation(target, current):
+    target = (target - np.mean(target)) / (np.std(target) + 1e-8)
+    current = (current - np.mean(current)) / (np.std(current) + 1e-8)
+    return np.mean(target * current)
+
+def gradient_loss(target, current):
+    grad_target_x = np.gradient(target, axis=1)
+    grad_target_y = np.gradient(target, axis=0)
+    grad_current_x = np.gradient(current, axis=1)
+    grad_current_y = np.gradient(current, axis=0)
+
+    loss_x = np.mean((grad_target_x - grad_current_x) ** 2)
+    loss_y = np.mean((grad_target_y - grad_current_y) ** 2)
+
+    return (loss_x + loss_y) / 2
+
+def hybrid_loss_v2(target, current, weights):
+    from skimage.metrics import structural_similarity as ssim
+
+    if weights.get("normalize_data", False):
+        target = target / np.max(target) if np.max(target) > 0 else target
+        current = current / np.max(current) if np.max(current) > 0 else current
+
+    w_dist = wasserstein_loss(target,current)
+    ssim_val = ssim(target, current, data_range=target.max() - target.min())
+    grad = gradient_loss(target, current)
+    ncc = normalized_cross_correlation(target, current)
+
+    loss = (
+        weights.get("wasserstein_weight", 0) * w_dist +
+        weights.get("ssim_weight", 0) * (1 - ssim_val) +
+        weights.get("gradient_weight", 0) * grad +
+        weights.get("ncc_weight", 0) * (1 - ncc)
+    )
+
+    return loss, w_dist, ssim_val, grad, ncc
+
+
+
+
 
 # --------------------------------
 # Main Logic
@@ -482,16 +870,33 @@ def main():
     print("-------------------")
 
     #Run Parameters
-
+    initial_coefficients =  [0.0, 0, -0.000000031, 0.00024, 0.00, 0]  # Placing here because used to determine bounds for LBFGS
+    adjustable_indices = [2, 3]  # a4, a3, a2
+    bounds = generate_bounds_from_initial(initial_coefficients, percent = 10, adjustable_indices=adjustable_indices)
+    print("Using bounds for LBFGS:")
+    print(bounds)
     #Error
     error_parameters = {
-        "wasserstein_weight": 0.002,
-        "ssim_weight": 1
+        "optimizer": "L-BFGS-B",
+        "max_steps": args.max_steps,
+        "error_min": args.error_min,
+        "wasserstein_weight": 1E2,
+        "ssim_weight": 1,
+        "early_stopping": {
+            "patience": args.patience,
+            "min_delta": args.min_delta
+        },
+        "bounds": bounds,
+        "normalize_data":True,
+        "use_emd2": False, #uses 2D Wasserstein style,
+        "gradient_weight": 1E4,
+        "ncc_weight": 0.5
+
     }
 
     # FROG Parameters
     frog_parameters = {
-        "integration_time": 0.5,
+        "integration_time": 0.1,
         "averaging": 1,
         "central_motor_position": 0.165,
         "scan_range": (-0.05, 0.05),
@@ -579,6 +984,22 @@ def main():
     print("-------------------")
 
     target_wavelength_data, target_delay_data, target_spectral_array = load_or_save_target_spectrogram(working_dir, args.resume, args.target_spectrogram)
+    # Compute number of steps in current FROG scan
+    num_current_delay_points = int(
+        (frog_parameters["scan_range"][1] - frog_parameters["scan_range"][0]) / frog_parameters["step_size"]
+    ) + 1
+
+    # Crop the target spectrogram delay axis to match current scan (centered)
+    if len(target_delay_data) > num_current_delay_points:
+        extra = len(target_delay_data) - num_current_delay_points
+        start = extra // 2
+        end = start + num_current_delay_points
+
+        print(f"[INFO] Cropping target delay axis: {len(target_delay_data)} → {num_current_delay_points}")
+        target_delay_data = target_delay_data[start:end]
+        target_spectral_array = target_spectral_array[:, start:end]
+    elif len(target_delay_data) < num_current_delay_points:
+        raise ValueError("Target spectrogram has fewer delay points than current scan range. Cannot align.")
 
     print("-------------------")
     print("Completed Loading Target Frog Spectrogram")
@@ -589,7 +1010,7 @@ def main():
     print("-------------------")
 
     # Define polynomial coefficients [a5, a4, a3, a2, a1, a0]
-    coefficients = [0.0, -0.000000000005, -0.000000031, 0.00024, 0.00, 0]  # Example polynomial
+    coefficients = initial_coefficients
 
     #combine these steps
     unwrapped_phase = phase_mask(coefficients, slm_parameters["effective_scale"], slm_parameters["width"])
@@ -605,7 +1026,7 @@ def main():
     print("-------------------")
     print("Take Initial FROG Measurment")
     print("-------------------")
-    trace, real_positions = frog.run()
+    trace, real_positions = frog.run(close=False)
     trace = trace.squeeze()
     wavelengths, masked_trace = frog.mask_trace(trace, frog_parameters["wavelength_range"])
     wavelegnths_target, masked_target = frog.mask_trace(target_spectral_array, frog_parameters["wavelength_range"])
@@ -623,34 +1044,57 @@ def main():
 
     
     plot(target_delay_data, wavelengths, masked_target, masked_trace, "plot0.pdf", plot_dir)
-    loss, wasserstein_distance, ssim = hybrid_loss(masked_target, masked_trace, error_parameters["wasserstein_weight"], error_parameters["ssim_weight"])
-    print(wasserstein_distance)
-    print(ssim)
-    print(loss)
+    frog.set_delay_vector(target_delay_data)
+    frog.set_wavelength_vector(wavelengths)
+    # loss, wasserstein_distance, ssim = hybrid_loss(masked_target, masked_trace, error_parameters["wasserstein_weight"], error_parameters["ssim_weight"], normalize=error_parameters["normalize_data"], use_emd2=error_parameters["use_emd2"])
+    loss, wasserstein_distance, ssim, grad_val, ncc_val = hybrid_loss_v2(masked_target, masked_trace, error_parameters)
 
     # Save static data (only once)
     save_static_data(working_dir / H5_FILE, real_positions, target_delay_data)
 
     # Inside iteration loop (or initial step)
     iteration = 0  # Update accordingly in loop
-    save_iteration_data(
-        working_dir / H5_FILE,
-        iteration,
-        phase_mask=pattern,
-        trace=trace,
-        masked_trace=masked_trace,
-        polynomial_coeffs=coefficients,
-        wasserstein_loss=wasserstein_distance,
-        ssim=ssim,
-        total_loss=loss
+    metrics = {
+        "wasserstein_loss": wasserstein_distance,
+        "ssim": ssim,
+        "total_loss": loss,
+        "gradient_loss": grad_val,
+        "ncc": ncc_val
+    }
+    save_iteration_data(working_dir / H5_FILE, iteration, pattern, trace, masked_trace, coefficients, metrics)
+    # save_iteration_data(
+    #     working_dir / H5_FILE,
+    #     iteration,
+    #     phase_mask=pattern,
+    #     trace=trace,
+    #     masked_trace=masked_trace,
+    #     polynomial_coeffs=coefficients,
+    #     wasserstein_loss=wasserstein_distance,
+    #     ssim=ssim,
+    #     total_loss=loss
+    # )
+
+
+
+    
+    optimized_coeffs = optimize_coefficients(
+        initial_coeffs=np.array(coefficients),
+        target_image=target_spectral_array,
+        slm=slm,
+        slm_parameters=slm_parameters,
+        frog=frog,
+        frog_parameters=frog_parameters,
+        error_parameters=error_parameters,
+        h5_path=working_dir / H5_FILE,
+        plot_dir=plot_dir,
+        working_dir=working_dir
     )
 
-
-
+    print("-------------------")
+    print("L-BFGS Optimization Complete")
+    print("-------------------")
+    print("Optimized Coefficients:", optimized_coeffs)
     
-
-    
-    #save frog and phase to h5
 
     #start error scan
 
@@ -658,7 +1102,7 @@ def main():
 
     # slm.load_csv(r"C:/Users/lasopr/Downloads/phase_13.csv")
 
-
+    frog.close_frog()
     slm.close()
 
     

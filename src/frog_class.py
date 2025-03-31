@@ -70,7 +70,9 @@ class FROG:
         self.scan_positions = np.linspace(self.scan_start, self.scan_end,
                                           int((self.scan_end - self.scan_start) / step_size) + 1) + central_motor_position
 
-    def run(self):
+        self.delay_vector = None
+        self.wavelength_vector = None
+    def run(self, close=True):
         """
         Perform the FROG scan and return collected spectra.
         
@@ -97,7 +99,9 @@ class FROG:
 
                 trace[:, k, avg] = np.array(list(self.spectrometer.GetSpectrum()))
 
-        self.spectrometer.Close()
+        if close:
+            close_frog()
+        
         return trace, real_positions
 
     def get_info(self):
@@ -114,6 +118,9 @@ class FROG:
             "Number of Wavelengths": len(self.wavelengths)
         }
         return info
+    
+    def close_frog(self):
+        self.spectrometer.Close()
 
     def plot(self, trace, real_positions, wavelength_range=(490, 560), time_axis=False):
         """
@@ -153,18 +160,31 @@ class FROG:
         plt.title("FROG Trace (Temporal)" if time_axis else "FROG Trace (Spatial)")
         plt.show()
 
+    def mask_trace(self, trace, wavelength_range=(490, 560)):
+        mask = (self.wavelengths >= wavelength_range[0]) & (self.wavelengths <= wavelength_range[1])
+        wavelengths = self.wavelengths[mask]
+        trace = trace[mask,:]
 
-frog = FROG(integration_time=0.5, averaging=1, central_motor_position=0.165, scan_range=(-0.05, 0.05), step_size=0.005)
+        return wavelengths, trace
+    
+    def set_wavelength_vector(self, wavelength_vector):
+        self.wavelength_vector = wavelength_vector
+    
+    def set_delay_vector(self, delay_vector):
+        self.delay_vector =  delay_vector
 
-# # Collect Data
-trace, real_positions = frog.run()
 
-# Get System Info
-info = frog.get_info()
-print(info)
+# frog = FROG(integration_time=0.5, averaging=1, central_motor_position=0.165, scan_range=(-0.05, 0.05), step_size=0.005)
 
-# Plot in Spatial Domain
-frog.plot(trace, real_positions, wavelength_range=(490, 560), time_axis=False)
+# # # Collect Data
+# trace, real_positions = frog.run()
 
-# Plot in Temporal Domain
-frog.plot(trace, real_positions, wavelength_range=(490, 560), time_axis=True)
+# # Get System Info
+# info = frog.get_info()
+# print(info)
+
+# # Plot in Spatial Domain
+# frog.plot(trace, real_positions, wavelength_range=(490, 560), time_axis=False)
+
+# # Plot in Temporal Domain
+# frog.plot(trace, real_positions, wavelength_range=(490, 560), time_axis=True)

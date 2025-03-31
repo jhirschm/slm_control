@@ -7,6 +7,9 @@ from matplotlib.widgets import Slider, Button, TextBox
 file_path = '/Users/jhirschm/Documents/ShapingExperiment/FrogData/03062025/flint_1_n.05tp.05w.001_480t560_500ms.pyfrog'
 file_path = 'C:\\FrogData\\03062025\\flint_1_n.05tp.05w.001_480t560_500ms.pyfrog'
 file_path = 'C:\\FrogData\\03072025\\slmPhase13_1_n.05tp.05w.001_480t560_500ms.frog.pyfrog'
+file_path = 'C:\\FrogData\\03062025\\flint_1_n.1tp.1w.001_480t560_100ms.pyfrog'
+
+
 
 # Initialize lists to hold data components
 header = ""
@@ -134,6 +137,8 @@ ax.set_title('FROG Measurement Data (490-560 nm)')
 
 plt.tight_layout()
 # plt.savefig('C:\\FrogData\\03062025\\flint_1_n.05tp.05w.001_480t560_500ms.pdf')
-plt.savefig('C:\\FrogData\\03072025\\slmPhase13_1_n.05tp.05w.001_480t560_500ms.frog.pdf')
+# plt.savefig('C:\\FrogData\\03072025\\slmPhase13_1_n.05tp.05w.001_480t560_500ms.frog.pdf')
+plt.savefig('C:\\FrogData\\03062025\\flint_1_n.1tp.1w.001_480t560_100ms.pdf')
+
 
 plt.show()
