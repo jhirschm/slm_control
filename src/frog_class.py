@@ -72,6 +72,8 @@ class FROG:
 
         self.delay_vector = None
         self.wavelength_vector = None
+    def close_frog(self):
+        self.spectrometer.Close()
     def run(self, close=True):
         """
         Perform the FROG scan and return collected spectra.
@@ -100,7 +102,7 @@ class FROG:
                 trace[:, k, avg] = np.array(list(self.spectrometer.GetSpectrum()))
 
         if close:
-            close_frog()
+           self.close_frog()
         
         return trace, real_positions
 
@@ -119,8 +121,7 @@ class FROG:
         }
         return info
     
-    def close_frog(self):
-        self.spectrometer.Close()
+    
 
     def plot(self, trace, real_positions, wavelength_range=(490, 560), time_axis=False):
         """
@@ -174,7 +175,7 @@ class FROG:
         self.delay_vector =  delay_vector
 
 
-# frog = FROG(integration_time=0.5, averaging=1, central_motor_position=0.165, scan_range=(-0.05, 0.05), step_size=0.005)
+# frog = FROG(integration_time=0.1, averaging=1, central_motor_position=0.165, scan_range=(-0.05, 0.05), step_size=0.001)
 
 # # # Collect Data
 # trace, real_positions = frog.run()
