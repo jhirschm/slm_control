@@ -851,9 +851,9 @@ def main():
 
         "initial_scaled_coefficients": [
             0.0,      # a5 (fixed)
-            0.0,      # a4 (fixed)
-        -2.999980608084964,      # a3 → corresponds to -3e-8 unscaled -2.999980608084964e-8
-            2.40899207870675,    # a2 → corresponds to 2.409e-4 unscaled 0.000240899207870675
+            3.25305999722143e-5,      # a4 (fixed)
+        -2.999964343100393,      # a3 → corresponds to -3e-8 unscaled -2.999980608084964e-8
+            2.4090017016278843,    # a2 → corresponds to 2.409e-4 unscaled 0.000240899207870675
             0.0,      # a1 (fixed)
             0.0       # a0 (fixed)
         ]
@@ -1006,8 +1006,7 @@ def main():
     trace = trace.squeeze()
     wavelengths, masked_trace = frog.mask_trace(trace, frog_parameters["wavelength_range"])
     wavelegnths_target, masked_target = frog.mask_trace(target_spectral_array, frog_parameters["wavelength_range"])
-
-    slm.close()
+   
 
     # frog.plot(trace, real_positions, wavelength_range=(490, 560), time_axis=True) 
     print("-------------------")
@@ -1022,6 +1021,11 @@ def main():
     plot(target_delay_data, wavelengths, masked_target, masked_trace, "plot0.pdf", plot_dir)
     frog.set_delay_vector(target_delay_data)
     frog.set_wavelength_vector(wavelengths)
+    frog.close_frog()
+    while 1:
+        time.sleep(5)
+        print("Waiting")
+    slm.close()
     # loss, wasserstein_distance, ssim = hybrid_loss(masked_target, masked_trace, error_parameters["wasserstein_weight"], error_parameters["ssim_weight"], normalize=error_parameters["normalize_data"], use_emd2=error_parameters["use_emd2"])
     loss, wasserstein_distance, ssim, grad_val, ncc_val = hybrid_loss_v2(masked_target, masked_trace, error_parameters)
 
@@ -1053,18 +1057,18 @@ def main():
 
 
     
-    optimized_coeffs = optimize_coefficients(
-        initial_coeffs=error_parameters["initial_scaled_coefficients"],
-        target_image=target_spectral_array,
-        slm_parameters=slm_parameters,
-        slm_init_params = slm_init_params,
-        frog=frog,
-        frog_parameters=frog_parameters,
-        error_parameters=error_parameters,
-        h5_path=working_dir / H5_FILE,
-        plot_dir=plot_dir,
-        working_dir=working_dir
-    )
+    # optimized_coeffs = optimize_coefficients(
+    #     initial_coeffs=error_parameters["initial_scaled_coefficients"],
+    #     target_image=target_spectral_array,
+    #     slm_parameters=slm_parameters,
+    #     slm_init_params = slm_init_params,
+    #     frog=frog,
+    #     frog_parameters=frog_parameters,
+    #     error_parameters=error_parameters,
+    #     h5_path=working_dir / H5_FILE,
+    #     plot_dir=plot_dir,
+    #     working_dir=working_dir
+    # )
 
     print("-------------------")
     print("L-BFGS Optimization Complete")

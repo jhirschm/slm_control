@@ -9,7 +9,7 @@ import clr
 from clr_loader import get_coreclr
 from pythonnet import load
 from scipy.constants import c  # Speed of light in m/s
-
+print("here")
 # Spectrometer setup
 spectrometer_path = r"C:\slm_control\src\spectrometer"
 if spectrometer_path not in sys.path:
@@ -176,6 +176,8 @@ class FROG:
 
 
 # frog = FROG(integration_time=0.1, averaging=1, central_motor_position=0.165, scan_range=(-0.05, 0.05), step_size=0.001)
+# frog = FROG(integration_time=0.1, averaging=1, central_motor_position=-.27, scan_range=(-0.05, 0.05), step_size=0.001)
+
 
 # # # Collect Data
 # trace, real_positions = frog.run()
@@ -187,5 +189,5 @@ class FROG:
 # # Plot in Spatial Domain
 # frog.plot(trace, real_positions, wavelength_range=(490, 560), time_axis=False)
 
-# # Plot in Temporal Domain
+# Plot in Temporal Domain
 # frog.plot(trace, real_positions, wavelength_range=(490, 560), time_axis=True)
