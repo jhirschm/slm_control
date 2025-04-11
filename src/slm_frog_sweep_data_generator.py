@@ -93,7 +93,7 @@ def expand_coefficients(bounds_dict, total_coeffs=6):
     return list(itertools.product(*coeff_options))
 
 
-def run_shaping(base_dir, shaping_params, frog_params, slm_params):
+def run_shaping(base_dir, shaping_params, frog_params, slm_params, start_idx=0, reload_baseline = False):
     workdir = setup_directory(base_dir)
     save_params_yaml(workdir, frog_params, slm_params, shaping_params)
     h5_file = create_h5_file(workdir, frog_params, slm_params, shaping_params)
@@ -102,6 +102,7 @@ def run_shaping(base_dir, shaping_params, frog_params, slm_params):
     filtered_frog_params = {k: v for k, v in frog_params.items() if k in valid_frog_params}
     frog = FROG(**filtered_frog_params)
 
+    # ---------- Save baseline -------------
     baseline_coeffs = shaping_params["baseline"]
     phase = phase_mask(baseline_coeffs, slm_params["effective_scale"], slm_params["width"])
     pattern = generate_phase_pattern(slm_params["width"], slm_params["height"], phase, workdir / "baseline_temp.csv")
@@ -115,24 +116,34 @@ def run_shaping(base_dir, shaping_params, frog_params, slm_params):
     _, masked_trace = frog.mask_trace(trace, frog_params["wavelength_range"])
 
     with h5py.File(h5_file, 'a') as f:
-        g = f.create_group("baseline")
-        g.create_dataset("coefficients", data=baseline_coeffs)
-        g.create_dataset("phase_mask", data=pattern)
-        g.create_dataset("trace", data=trace)
-        g.create_dataset("masked_trace", data=masked_trace)
+        if "baseline" not in f:
+            g = f.create_group("baseline")
+            g.create_dataset("coefficients", data=baseline_coeffs)
+            g.create_dataset("phase_mask", data=pattern)
+            g.create_dataset("trace", data=trace)
+            g.create_dataset("masked_trace", data=masked_trace)
+            print("[Baseline] Saved baseline FROG and SLM data.")
+        else:
+            print("[Baseline] Already exists in HDF5.")
 
-    print("[Baseline] Saved baseline FROG and SLM data.")
     slm.close()
 
+    # ---------- Sweep Preparation ----------
     sweep_coeffs = expand_coefficients(shaping_params["bounds"])
     total_sweeps = len(sweep_coeffs)
     sweep_metadata = np.zeros(total_sweeps, dtype=sweep_dtype)
-    print(sweep_coeffs)
-    print(sweep_metadata)
+
+    # ---------- Sweep Execution ----------
     for idx, added in enumerate(sweep_coeffs):
+        final_coeffs = [a + b for a, b in zip(shaping_params["baseline"], added)]
+        sweep_metadata[idx] = (idx, np.array(added), np.array(final_coeffs))
+
+        if idx < start_idx:
+            print(f"[{idx + 1}/{total_sweeps}] Skipping: Already completed.")
+            continue
+
         print(f"[{idx + 1}/{total_sweeps}] Generating phase mask and taking measurement...")
 
-        final_coeffs = [a + b for a, b in zip(shaping_params["baseline"], added)]
         phase = phase_mask(final_coeffs, slm_params["effective_scale"], slm_params["width"])
         pattern = generate_phase_pattern(slm_params["width"], slm_params["height"], phase, workdir / "temp.csv")
 
@@ -145,6 +156,9 @@ def run_shaping(base_dir, shaping_params, frog_params, slm_params):
         _, masked_trace = frog.mask_trace(trace, frog_params["wavelength_range"])
 
         with h5py.File(h5_file, 'a') as f:
+            if f"sweep/{idx}" in f:
+                print(f"[{idx + 1}/{total_sweeps}] Already exists in HDF5. Skipping save.")
+                continue
             g = f.create_group(f"sweep/{idx}")
             g.create_dataset("added_coefficients", data=added)
             g.create_dataset("total_coefficients", data=final_coeffs)
@@ -152,27 +166,35 @@ def run_shaping(base_dir, shaping_params, frog_params, slm_params):
             g.create_dataset("trace", data=trace)
             g.create_dataset("masked_trace", data=masked_trace)
 
-        sweep_metadata[idx] = (idx, np.array(added), np.array(final_coeffs))
-
         print(f"[{idx + 1}/{total_sweeps}] Sweep Step Complete.\n")
+        slm.close()
+
+    if (reload_baseline):
+        slm = SantecSLM(**{k: slm_params[k] for k in ["slm_number", "bitdepth", "wave_um", "rate", "phase_range"]})
+        slm.load_csv(str(workdir / "baseline_temp.csv"))
+        time.sleep(1)
         slm.close()
 
     frog.close_frog()
 
-    # Save sweep metadata
+    # ---------- Save metadata ----------
     with h5py.File(h5_file, 'a') as f:
         meta_group = f.require_group("metadata")
+        if "sweep_info" in meta_group:
+            del meta_group["sweep_info"]  # overwrite safely
         meta_group.create_dataset("sweep_info", data=sweep_metadata)
+
+    print("[INFO] Sweep metadata saved successfully.")
 
 # Example usage:
 if __name__ == "__main__":
     shaping_params = {
         "baseline": [0, 3.25305999722143e-17, -2.999964343100393e-8, 2.4090017016278843e-4, 0, 0],
         "bounds": {
-            0: [(0, 0, 1)],
-            1: [(0, 0, 1)],
-            2: [(0,0,1), (1e-8, 10e-8, 10), (-10e-8, -1e-8, 10)],
-            3: [(0,0,1), (1e-6, 10e-6, 10), (-10e-6, -1e-6, 10)],
+            0: [(0, 0, 1)],#, (1e-17, 1e-15, 3), (-1e-15, -1e-17, 3)],
+            1: [(0, 0, 1),(1e-10, 1e-9, 2)],
+            2: [(0,0,1), (1e-7, 1e-6, 9), (-1e-6, -1e-7, 10)],
+            3: [(0,0,1), (-5e-5, -5e-6, 3)],
             4: [(0, 0, 1)],
             5: [(0, 0, 1)]
         }
@@ -182,7 +204,7 @@ if __name__ == "__main__":
         "integration_time": 0.1,
         "averaging": 1,
         "central_motor_position": -.27,
-        "scan_range": (-0.08, 0.08),
+        "scan_range": (-0.06, 0.06),
         "step_size": 0.001,
         "wavelength_range": (480, 560)
     }
@@ -198,4 +220,4 @@ if __name__ == "__main__":
         "height": 1080
     }
 
-    run_shaping("C:\\FROG_SLM_DataGen\\slm_sweep_output_first", shaping_params, frog_params, slm_params)
+    run_shaping("C:\\FROG_SLM_DataGen\\slm_sweep_output_fourth", shaping_params, frog_params, slm_params, reload_baseline = True)

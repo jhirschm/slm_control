@@ -41,6 +41,7 @@ additional_coefficients = [0, 0, 2e-8, .0, 0, 0]  # modify freely
 additional_coefficients = [0, 0, 3e-8, .0, 0, 0]  # modify freely
 additional_coefficients = [0, 0, -3e-8, .0, 0, 0]  # modify freely
 additional_coefficients = [0, 1e-11, 0, .0, 0, 0]  # modify freely
+additional_coefficients = [0, 0, 1e-7, -5e-6, 0, 0]  # modify freely
 
 
 

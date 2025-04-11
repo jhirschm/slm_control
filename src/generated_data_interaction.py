@@ -5,12 +5,34 @@ import matplotlib.pyplot as plt
 from santec_slm import SantecSLM
 from frog_class import FROG
 from scipy.constants import c
+from pathlib import Path
+import pandas as pd
+
+
 
 
 
 def load_metadata(h5_file):
     with h5py.File(h5_file, 'r') as f:
         return f['metadata/sweep_info'][:]
+    
+# === Phase mask generation ===
+def phase_mask(polynomial_coef, scaler, num_pixels):
+    x_center = num_pixels // 2
+    x = np.arange(num_pixels)
+    x_normalized = x - x_center
+    phi = np.polyval(polynomial_coef, x_normalized)
+    phi_scaled = phi / (2 * np.pi) * scaler
+    return np.mod(phi_scaled, scaler + 1)
+
+def generate_phase_pattern(width, height, phase_values, output_csv):
+    pattern = np.tile(phase_values, (height, 1)).astype(int)
+    df = pd.DataFrame(pattern)
+    df.insert(0, "Y/X", range(height))
+    df.columns = ["Y/X"] + list(range(width))
+    df = df.astype(int)
+    df.to_csv(output_csv, index=False)
+    return pattern
 
 # def plot_masked_trace(h5_file, sweep_name):
 #     with h5py.File(h5_file, 'r') as f:
@@ -72,6 +94,23 @@ def load_phase_mask_to_slm(h5_file, sweep_name, slm_params):
     slm.close()
     return 1
 
+def load_custom_mask(directory, slm_parameters, coef):
+    csv_path = directory / "custom_temp_load.csv"
+    unwrapped_phase = phase_mask(coef, slm_parameters["effective_scale"], slm_parameters["width"])
+    pattern = generate_phase_pattern(slm_parameters["width"], slm_parameters["height"], unwrapped_phase, csv_path)
+
+    slm = SantecSLM(
+        slm_number=slm_parameters["slm_number"],
+        bitdepth=slm_parameters["bitdepth"],
+        wave_um=slm_parameters["wave_um"],
+        rate=slm_parameters["rate"],
+        phase_range=slm_parameters["phase_range"]
+    )
+    slm.load_csv(str(csv_path))
+
+    print(f"[INFO] Phase mask loaded to SLM from {csv_path}")
+    slm.close()
+
 def run_frog_check(frog_params):
     valid_frog_params = FROG.__init__.__code__.co_varnames
     filtered_frog_params = {k: v for k, v in frog_params.items() if k in valid_frog_params}
@@ -123,7 +162,23 @@ def main():
     args = parser.parse_args()
 
     h5_file = args.file
+    h5_dir = Path(args.file).resolve().parent
+    print("Directory:", h5_dir)
     meta = load_metadata(h5_file)
+
+    slm_parameters = {
+        "slm_number": 1,
+        "bitdepth": 10,
+        "wave_um": 1.035,
+        "rate": 120,
+        "phase_range": 218,
+        "scale": 1023,
+        "effective_scale": 939,
+        "width": 1920,
+        "height": 1080
+    }
+    print("Using default slm parameters for custom: ")
+    print(slm_parameters)
 
     with h5py.File(h5_file, 'r') as f:
         slm_params = dict(f['slm'].attrs)
@@ -132,7 +187,7 @@ def main():
     total_sweeps = len(meta)
 
     while True:
-        cmd = input("Enter command (view, load, frog confirm, load and close, search, close): ").strip().lower()
+        cmd = input("Enter command (view, load, frog confirm, load and close, search, custom, close): ").strip().lower()
 
         if cmd == "close":
             print("Exiting...")
@@ -171,9 +226,29 @@ def main():
 
 
             elif cmd == "load and close":
-                load_phase_mask_to_slm(h5_file, group_name, slm_params)
+                cmd = input("Is RA OFF? (enter yes/no) ")
+                if cmd == "yes" or "Yes":
+                    load_phase_mask_to_slm(h5_file, group_name, slm_params)
+                else:
+                    print("Ensure carbide RA is off and try loading again.")
                 print("Phase mask loaded. Exiting...")
                 break
+
+        elif cmd == "custom":
+                print("Please enter 6 added coefficients (a5 ... a0) separated by space:")
+                try:
+                    vals = input().strip().split()
+                    if len(vals) != 6:
+                        raise ValueError
+                    user_coeffs = [float(v) for v in vals]
+                except ValueError:
+                    print("Invalid input. Please enter exactly 6 numerical values.")
+                #generate phase mask
+                cmd = input("Is RA OFF? (enter yes/no) ")
+                if cmd == "yes" or "Yes":
+                    load_custom_mask(directory=h5_dir, slm_parameters=slm_parameters, coef=user_coeffs)
+                else:
+                    print("Ensure carbide RA is off and try loading again.")
 
         elif cmd == "frog confirm":
             run_frog_check(frog_params)
