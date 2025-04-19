@@ -185,7 +185,7 @@ def main():
         frog_params = dict(f['frog'].attrs)
 
     total_sweeps = len(meta)
-
+    baseline =  [0, 3.25305999722143e-17, -2.999964343100393e-8, 2.4090017016278843e-4, 0, 0]
     while True:
         cmd = input("Enter command (view, load, frog confirm, load and close, search, custom, close): ").strip().lower()
 
@@ -246,7 +246,14 @@ def main():
                 #generate phase mask
                 cmd = input("Is RA OFF? (enter yes/no) ")
                 if cmd == "yes" or "Yes":
-                    load_custom_mask(directory=h5_dir, slm_parameters=slm_parameters, coef=user_coeffs)
+                    print("Added Coeffs ")
+                    print(user_coeffs)
+                    coeffs = np.zeros(len(user_coeffs))
+                    for i in range(0, len(user_coeffs)):
+                        coeffs[i] = user_coeffs[i] + baseline[i]
+                    print("Total Coeffs ")
+                    print(coeffs)
+                    load_custom_mask(directory=h5_dir, slm_parameters=slm_parameters, coef=coeffs)
                 else:
                     print("Ensure carbide RA is off and try loading again.")
 
